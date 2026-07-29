@@ -11,6 +11,7 @@ add_library(raft_core
     src/raft.cpp
     src/simulator.cpp
     src/history.cpp
+    src/storage.cpp
 )
 target_include_directories(raft_core PUBLIC src)
 
