@@ -2,6 +2,7 @@
 #include "simulator.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -48,6 +49,8 @@ void printUsage() {
         << "  --duplicate-rate P\n"
         << "  --scenario basic|failover|partition|random\n"
         << "  --trace-out FILE          Save metadata and complete trace\n"
+        << "  --wal-dir DIRECTORY       Persist each node to node-N.wal with fsync\n"
+        << "  --preserve-wal            Reuse existing WAL files instead of clearing them\n"
         << "  --replay FILE             Re-run saved trace configuration and verify hash\n";
 }
 
@@ -156,6 +159,7 @@ void writeTraceFile(const std::string& path, const RunOptions& options,
         << "drop_rate=" << options.config.dropRate << '\n'
         << "duplicate_rate=" << options.config.duplicateRate << '\n'
         << "scenario=" << options.scenario << '\n'
+        << "disk_wal=" << (options.config.walDirectory.has_value() ? 1 : 0) << '\n'
         << "trace_hash=" << simulator.traceHash() << '\n'
         << "---TRACE---\n";
     for (const auto& line : simulator.traceLines()) out << line << '\n';
@@ -184,6 +188,11 @@ RunOptions readReplayOptions(const std::string& path, std::string& expectedHash)
     options.config.dropRate = parseDouble(metadata.at("drop_rate"), "drop_rate");
     options.config.duplicateRate = parseDouble(metadata.at("duplicate_rate"), "duplicate_rate");
     options.scenario = metadata.at("scenario");
+    if (metadata.contains("disk_wal") && metadata.at("disk_wal") == "1") {
+        options.config.walDirectory = std::filesystem::temp_directory_path() /
+            ("raftkv-replay-" + metadata.at("trace_hash"));
+        options.config.resetWalOnInitialize = true;
+    }
     expectedHash = metadata.at("trace_hash");
     return options;
 }
@@ -259,6 +268,8 @@ int main(int argc, char** argv) {
             else if (arg == "--duplicate-rate") options.config.duplicateRate = parseDouble(value(arg), arg);
             else if (arg == "--scenario") options.scenario = value(arg);
             else if (arg == "--trace-out") options.traceOut = value(arg);
+            else if (arg == "--wal-dir") options.config.walDirectory = value(arg);
+            else if (arg == "--preserve-wal") options.config.resetWalOnInitialize = false;
             else if (arg == "--replay") replayFile = value(arg);
             else if (arg == "--help") { printUsage(); return 0; }
             else throw std::invalid_argument("unknown argument: " + arg);
