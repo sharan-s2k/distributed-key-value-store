@@ -1,6 +1,7 @@
 #include "simulator.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -29,13 +30,31 @@ Simulator::Simulator(SimulatorConfig config)
 }
 
 void Simulator::initialize() {
-    for (NodeId id = 1; id <= config_.nodeCount; ++id) nodes_.emplace(id, NodeRuntime{});
+    if (config_.walDirectory.has_value()) {
+        std::filesystem::create_directories(*config_.walDirectory);
+    }
+
+    for (NodeId id = 1; id <= config_.nodeCount; ++id) {
+        NodeRuntime runtime;
+        if (config_.walDirectory.has_value()) {
+            const auto walPath = *config_.walDirectory / ("node-" + std::to_string(id) + ".wal");
+            if (config_.resetWalOnInitialize && std::filesystem::exists(walPath)) {
+                std::filesystem::remove(walPath);
+            }
+            runtime.storage = std::make_unique<DiskWalStorage>(walPath);
+        } else {
+            runtime.storage = std::make_unique<SimulatedStorage>();
+        }
+        nodes_.emplace(id, std::move(runtime));
+    }
+
     for (NodeId id = 1; id <= config_.nodeCount; ++id) {
         createNode(id);
         nodes_.at(id).raft->start(now_);
     }
     trace("simulator_started seed=" + std::to_string(config_.seed) +
-          " nodes=" + std::to_string(config_.nodeCount));
+          " nodes=" + std::to_string(config_.nodeCount) +
+          " storage=" + (config_.walDirectory.has_value() ? "disk_wal" : "simulated"));
 }
 
 void Simulator::run(std::uint64_t maxEvents) {
@@ -191,7 +210,7 @@ void Simulator::createNode(NodeId id) {
     runtime.raft = std::make_unique<RaftNode>(
         id,
         std::move(peers),
-        runtime.storage,
+        *runtime.storage,
         config_.raft,
         [this](Envelope envelope) { send(std::move(envelope)); },
         [this](NodeId nodeId, TimeMs deadline, std::uint64_t generation) {

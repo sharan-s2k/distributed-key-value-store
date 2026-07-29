@@ -7,6 +7,7 @@
 #include "types.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -71,6 +72,8 @@ struct SimulatorConfig {
     double dropRate{0.0};
     double duplicateRate{0.0};
     RaftConfig raft{};
+    std::optional<std::filesystem::path> walDirectory;
+    bool resetWalOnInitialize{true};
 };
 
 class Simulator {
@@ -101,7 +104,7 @@ public:
 
 private:
     struct NodeRuntime {
-        SimulatedStorage storage;
+        std::unique_ptr<StableStorage> storage;
         std::unique_ptr<RaftNode> raft;
         bool alive{true};
     };
