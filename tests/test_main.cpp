@@ -1,6 +1,8 @@
 #include "simulator.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -88,6 +90,86 @@ void testDeleteHistory() {
     require(!sim.node(1).stateMachine().get("x").has_value(), "delete must be replicated");
     require(sim.checkLinearizability().ok, "put/delete history must be write-linearizable");
 }
+
+std::filesystem::path temporaryWalPath(const std::string& name) {
+    const auto directory = std::filesystem::temp_directory_path() / "raftkv-wal-tests";
+    std::filesystem::create_directories(directory);
+    const auto path = directory / name;
+    std::filesystem::remove(path);
+    return path;
+}
+
+void testDiskWalRecovery() {
+    const auto path = temporaryWalPath("recovery.wal");
+    {
+        DiskWalStorage storage(path);
+        storage.saveTermAndVote(7, NodeId{2});
+        std::vector<LogEntry> log{
+            LogEntry{0, Command::noop()},
+            LogEntry{6, Command::put(101, "user:1", "value:1")},
+            LogEntry{7, Command::erase(102, "user:2")}
+        };
+        storage.saveLog(log);
+        require(storage.fileSize() > 0, "WAL file must contain durable records");
+    }
+
+    DiskWalStorage recovered(path);
+    require(recovered.load().currentTerm == 7, "WAL must recover current term");
+    require(recovered.load().votedFor == NodeId{2}, "WAL must recover votedFor");
+    require(recovered.load().log.size() == 3, "WAL must recover full Raft log");
+    require(recovered.load().log[1].command.key == "user:1", "WAL must recover commands");
+    std::filesystem::remove(path);
+}
+
+void testDiskWalTruncatedTailRecovery() {
+    const auto path = temporaryWalPath("truncated-tail.wal");
+    std::uintmax_t validSize = 0;
+    {
+        DiskWalStorage storage(path);
+        storage.saveTermAndVote(3, NodeId{1});
+        storage.saveLog({
+            LogEntry{0, Command::noop()},
+            LogEntry{3, Command::put(1, "x", "10")}
+        });
+        validSize = storage.fileSize();
+    }
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        const char tornRecord[] = {0x57, 0x56, 0x4b};
+        out.write(tornRecord, sizeof(tornRecord));
+    }
+    require(std::filesystem::file_size(path) > validSize, "test must append torn tail bytes");
+
+    DiskWalStorage recovered(path);
+    require(recovered.load().currentTerm == 3, "valid records before torn tail must survive");
+    require(recovered.load().log.size() == 2, "valid log must survive torn tail");
+    require(std::filesystem::file_size(path) == validSize, "torn WAL tail must be truncated");
+    std::filesystem::remove(path);
+}
+
+void testSimulatorWithDiskWal() {
+    const auto directory = std::filesystem::temp_directory_path() / "raftkv-simulator-wal";
+    std::filesystem::remove_all(directory);
+
+    SimulatorConfig config;
+    config.seed = 909;
+    config.walDirectory = directory;
+    config.resetWalOnInitialize = true;
+
+    Simulator sim(config);
+    sim.initialize();
+    sim.scheduleClientPut(500, "durable", "value");
+    sim.run(700);
+
+    for (NodeId id = 1; id <= 3; ++id) {
+        require(std::filesystem::exists(directory / ("node-" + std::to_string(id) + ".wal")),
+                "each node must have a WAL file");
+    }
+    require(sim.checkLinearizability().ok, "disk-WAL simulation must remain linearizable");
+    std::filesystem::remove_all(directory);
+}
+
 } // namespace
 
 int main() {
@@ -96,6 +178,9 @@ int main() {
         testGeneratedWorkloadReplicationAndLinearizability();
         testLeaderFailover();
         testDeleteHistory();
+        testDiskWalRecovery();
+        testDiskWalTruncatedTailRecovery();
+        testSimulatorWithDiskWal();
         std::cout << "all tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
