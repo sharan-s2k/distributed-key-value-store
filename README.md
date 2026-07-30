@@ -10,6 +10,11 @@ The project focuses on the difficult parts of distributed systems: keeping repli
 flowchart LR
     Client["gRPC Client"] --> Leader["Current Raft Leader"]
 
+    Core["Shared Raft Core"] --> Grpc["gRPC Runtime"]
+    Core --> Simulator["Deterministic Simulator"]
+
+    Grpc --> Leader
+
     subgraph Cluster["Multi-Process Raft Cluster"]
         N1["Node 1"]
         N2["Node 2"]
@@ -29,9 +34,6 @@ flowchart LR
     end
 
     Leader --> Cluster
-
-    Core["Shared Raft Core"] --> Cluster
-    Core --> Simulator["Deterministic Simulator"]
 
     Simulator --> Network["Virtual Network + Logical Clock"]
     Network --> Faults["Delay, Loss, Duplication, Partitions, Crashes"]
